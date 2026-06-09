@@ -111,6 +111,7 @@ function TTSWidget({ entities, callService }) {
 function EntityCard({ entity, callService, isHidden, toggleHidden, isFavorite, toggleFavorite }) {
   const domain = entity.entity_id.split('.')[0];
   const isActive = entity.state === 'on' || entity.state === 'playing';
+  const [sleepTimer, setSleepTimer] = useState(false);
 
   const toggleState = () => {
     const service = isActive ? 'turn_off' : 'turn_on';
@@ -126,9 +127,20 @@ function EntityCard({ entity, callService, isHidden, toggleHidden, isFavorite, t
     }
   };
 
+  const HA_URL = import.meta.env.VITE_HA_URL || '';
+  const bgImage = domain === 'media_player' && entity.attributes.entity_picture ? `url(${HA_URL}${entity.attributes.entity_picture})` : undefined;
+
   return (
-    <div className="glass-card">
-      <div className="card-header">
+    <div className="glass-card" style={{ 
+      backgroundImage: bgImage, 
+      backgroundSize: 'cover', 
+      backgroundPosition: 'center', 
+      position: 'relative', 
+      overflow: 'hidden' 
+    }}>
+      {bgImage && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.75)', zIndex: 0 }} />}
+      <div style={{ position: 'relative', zIndex: 1 }}>
+        <div className="card-header">
         <div className={`entity-icon ${isActive ? 'active' : ''}`}>
           {getIcon()}
         </div>
@@ -222,6 +234,35 @@ function EntityCard({ entity, callService, isHidden, toggleHidden, isFavorite, t
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', minWidth: '25px' }}>{Math.round(entity.attributes.volume_level * 100)}%</span>
               </div>
             )}
+
+            {/* Quick Playlists & Timer */}
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+              <button 
+                className="tab-btn" 
+                style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem' }}
+                onClick={() => callService('media_player', 'play_media', { 
+                  entity_id: entity.entity_id, 
+                  media_content_id: 'http://icecast-qmusicnl-cdp.triple-it.nl/Qmusic_nl_live_96.mp3', 
+                  media_content_type: 'music' 
+                })}
+              >
+                📻 Qmusic
+              </button>
+              <button 
+                className="tab-btn" 
+                style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', background: sleepTimer ? 'rgba(0,255,0,0.2)' : undefined }}
+                onClick={() => {
+                  setSleepTimer(true);
+                  setTimeout(() => {
+                    callService('media_player', 'media_stop', { entity_id: entity.entity_id });
+                    setSleepTimer(false);
+                  }, 30 * 60 * 1000);
+                }}
+                disabled={sleepTimer}
+              >
+                🌙 {sleepTimer ? 'Timer (30m)' : 'Slaaptimer'}
+              </button>
+            </div>
           </div>
         )}
         
@@ -242,6 +283,59 @@ function EntityCard({ entity, callService, isHidden, toggleHidden, isFavorite, t
           />
           Verberg
         </label>
+      </div>
+      </div>
+    </div>
+  );
+}
+
+function PartyModeWidget({ entities, callService }) {
+  const speakers = Object.values(entities).filter(ent => ent.entity_id.startsWith('media_player.'));
+  
+  const handlePlayEverywhere = () => {
+    const targets = speakers.map(s => s.entity_id);
+    callService('media_player', 'play_media', {
+      entity_id: targets,
+      media_content_id: 'http://icecast-qmusicnl-cdp.triple-it.nl/Qmusic_nl_live_96.mp3',
+      media_content_type: 'music'
+    });
+  };
+
+  const handleMasterVolume = (e) => {
+    const newVol = e.target.value / 100;
+    const targets = speakers.map(s => s.entity_id);
+    callService('media_player', 'volume_set', {
+      entity_id: targets,
+      volume_level: newVol
+    });
+  };
+
+  if (speakers.length === 0) return null;
+
+  return (
+    <div className="glass-card" style={{ marginBottom: '2rem' }}>
+      <h3 className="card-title">🎉 Party Mode (Hele Huis)</h3>
+      <p className="card-subtitle">Bedien al je speakers tegelijk</p>
+      
+      <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <button className="tab-btn active" onClick={handlePlayEverywhere}>
+          ▶ Qmusic Overal Afspelen
+        </button>
+        <button className="tab-btn" onClick={() => callService('media_player', 'media_stop', { entity_id: speakers.map(s => s.entity_id) })}>
+          ⏹ Alles Stoppen
+        </button>
+      </div>
+      
+      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '1rem' }}>
+        <span style={{ fontSize: '0.85rem', color: 'var(--text-main)' }}>Master Volume:</span>
+        <input 
+          type="range" 
+          min="0" 
+          max="100" 
+          defaultValue="30"
+          onChange={handleMasterVolume}
+          style={{ flex: 1, accentColor: 'var(--accent-color)' }}
+        />
       </div>
     </div>
   );
@@ -482,7 +576,10 @@ function App() {
 
       {/* Omroep Sectie (tonen bij Speakers tab) */}
       {activeMainTab === 'speakers' && (
-        <TTSWidget entities={entities} callService={callService} />
+        <>
+          <PartyModeWidget entities={entities} callService={callService} />
+          <TTSWidget entities={entities} callService={callService} />
+        </>
       )}
 
       <main className="dashboard-grid">
@@ -503,6 +600,37 @@ function App() {
           </p>
         )}
       </main>
+
+      {/* Global Now Playing Mini-Player */}
+      {(() => {
+        const playingMediaPlayers = Object.values(entities).filter(
+          e => e.entity_id.startsWith('media_player.') && e.state === 'playing'
+        );
+        const globalPlaying = playingMediaPlayers.length > 0 ? playingMediaPlayers[0] : null;
+        
+        if (!globalPlaying) return null;
+
+        return (
+          <div style={{
+            position: 'fixed', bottom: 0, left: 0, right: 0, background: 'rgba(20,20,20,0.85)', backdropFilter: 'blur(10px)',
+            borderTop: '1px solid rgba(255,255,255,0.1)', padding: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', zIndex: 100
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+              {globalPlaying.attributes.entity_picture && (
+                <img src={`${import.meta.env.VITE_HA_URL || ''}${globalPlaying.attributes.entity_picture}`} alt="cover" style={{ width: '40px', height: '40px', borderRadius: '4px' }} />
+              )}
+              <div>
+                <p style={{ fontWeight: 'bold', fontSize: '0.9rem', color: 'white', margin: 0 }}>{globalPlaying.attributes.media_title || 'Muziek'}</p>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>{globalPlaying.attributes.friendly_name} • {globalPlaying.attributes.media_artist || 'Radio'}</p>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button className="tab-btn" onClick={() => callService('media_player', 'media_pause', { entity_id: globalPlaying.entity_id })}>⏸ Pauze</button>
+            </div>
+          </div>
+        );
+      })()}
+
     </div>
   );
 }
